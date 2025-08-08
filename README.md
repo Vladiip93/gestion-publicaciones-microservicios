@@ -8,6 +8,14 @@ Este repositorio contiene el proyecto final para la materia de Arquitectura de S
 
 La arquitectura está compuesta por seis microservicios backend desacoplados, una base de datos distribuida, un bróker de mensajería y una aplicación frontend de tipo SPA (Single Page Application). La comunicación es orquestada a través de un API Gateway que actúa como punto único de entrada.
 
+## 🏛️ Diagrama de arquitectura
+
+![Diagrama de arquitectura](docs/arquitectura.png)
+
+## 🏛️ Modelo BPMN
+
+![Modelo BPMN](docs/proceso_publicacion.png)
+
 ### Componentes Principales:
 * **API Gateway (`gateway-service`):** Punto de entrada único para todas las peticiones del cliente. Se encarga del enrutamiento dinámico, la seguridad perimetral y la gestión de CORS.
 * **Service Discovery (`eureka-service`):** Actúa como el registro central donde cada microservicio se inscribe, permitiendo que se descubran dinámicamente en la red.
