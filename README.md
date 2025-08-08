@@ -132,6 +132,6 @@ Al iniciar el sistema por primera vez, se crea un usuario administrador con las 
 
 El flujo de trabajo editorial, desde la creación del borrador hasta la publicación final, ha sido modelado utilizando la notación BPMN 2.0. El archivo del modelo se encuentra en la siguiente ubicación:
 ```
-/docs/publicacion-workflow.bpmn
+/docs/proceso_publicacion1.bpmn
 ```
 Este diagrama sirve como una especificación visual y técnica del proceso de negocio principal del sistema.
