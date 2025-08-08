@@ -1,0 +1,41 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: auth-service
+
+  # --- Configuración de Base de Datos (CockroachDB) ---
+  datasource:
+    url: jdbc:postgresql://localhost:26257/defaultdb?sslmode=disable
+    username: root
+    password: ""
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    # Usa el dialecto genérico de CockroachDB que ya viene en Hibernate Core
+    database-platform: org.hibernate.dialect.CockroachDialect
+
+  # --- RabbitMQ ---
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: user
+    password: password
+
+# --- Eureka Client ---
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+# --- Logging ---
+logging:
+  level:
+    root: INFO
+    org.springframework.security: DEBUG
+    com.espe.mspr.authservice: DEBUG

@@ -1,0 +1,52 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: publicaciones-service
+
+  datasource:
+    # CockroachDB en localhost (puerto 26257) sin SSL
+    url: jdbc:postgresql://localhost:26257/publicacionesdb?sslmode=disable
+    username: root
+    password:
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate.jdbc.lob.non_contextual_creation: true
+      # No definas hibernate.dialect: Hibernate 6 lo detecta solo
+
+  jackson:
+    serialization:
+      WRITE_DATES_AS_TIMESTAMPS: false
+
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: user     # ajusta si usas guest/guest
+    password: pass
+
+# Exchange/cola para eventos de Publicaciones (usado por el catálogo/notificaciones)
+rabbitmq:
+  exchange:
+    name: publicaciones.exchange
+  # Si tienes un publisher de outbox a Rabbit, apunta al exchange anterior
+  outbox:
+    enabled: true         # si tu publicador lo usa
+
+# Eureka (para que el gateway enrute /api/publications/**)
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+logging:
+  level:
+    root: info
+    com.espe.mspr.publicacionesservice: debug

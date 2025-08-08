@@ -1,0 +1,53 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: catalogo-service
+
+  # ===== Base de datos (CockroachDB/Postgres driver) =====
+  datasource:
+    # Si usas Cockroach en Docker (puerto 26257, --insecure):
+    url: jdbc:postgresql://localhost:26257/catalogodb?sslmode=disable
+    username: root
+    password:
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate.jdbc.lob.non_contextual_creation: true
+      # No forces hibernate.dialect; Hibernate 6 detecta la BD solo
+
+  # ===== RabbitMQ (publisher: publicaciones-service) =====
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: user       # ajusta si usas guest/guest
+    password: password       # ajusta si usas guest
+#  -- Nombres de objetos AMQP que usamos en ambas apps --
+rabbitmq:
+  exchange:
+    name: publicaciones.exchange
+  queue:
+    name: catalogo.publications.queue
+  routing-key:
+    # Consumimos SOLO el evento de snapshot para catálogo
+    pattern: PublicationReadyForCatalog
+
+# Eureka (para que el gateway enrute /api/catalogo/**)
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+# Logging sugerido
+logging:
+  level:
+    root: info
+    org.springframework.amqp: info
+    com.espe.mspr.catalogoservice: debug

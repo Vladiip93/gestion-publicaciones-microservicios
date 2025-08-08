@@ -1,0 +1,32 @@
+server:
+  port: 8084 # Puerto para el servicio de notificaciones
+
+spring:
+  application:
+    name: notificaciones-service
+
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: user
+    password: password
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+rabbitmq:
+  exchange:
+    name: "publication.events"
+  queue:
+    name: "notifications.activity"
+  routing-key:
+    pattern: "#" # El patrón '#' escucha todos los mensajes del exchange
+
+logging:
+  level:
+    root: INFO
+    com.espe.mspr.notificacionesservice: DEBUG

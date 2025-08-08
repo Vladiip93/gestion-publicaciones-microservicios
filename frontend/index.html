@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Gestor de Publicaciones</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .loader{border:4px solid #f3f3f3;border-top:4px solid #3498db;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite}
+        @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+        pre.json{background:#0b1020;color:#c9e3ff;padding:12px;border-radius:8px;overflow:auto;max-height:280px;font-size:12px}
+    </style>
+</head>
+<body class="bg-gray-100">
+<div id="root"></div>
+
+<script type="text/babel">
+    const { useState, useEffect, createContext, useContext } = React;
+
+    // ======================= Config =======================
+    const GATEWAY_URL = 'http://localhost:8089';
+    const USE_DUMMY_LOGIN = true; // ponlo en false cuando tengas el AS real
+
+    // Genera/recupera un autorPrincipalId “estable” para esta sesión
+    const getOrMakeAuthorId = () => {
+        let id = localStorage.getItem('authorId');
+        if (!id) {
+            if (crypto && crypto.randomUUID) id = crypto.randomUUID();
+            else id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+                const r = Math.random()*16|0, v = c === 'x' ? r : (r&0x3|0x8);
+                return v.toString(16);
+            });
+            localStorage.setItem('authorId', id);
+        }
+        return id;
+    };
+
+    // ======================= Auth =======================
+    const AuthContext = createContext(null);
+    const useAuth = () => useContext(AuthContext);
+
+    const AuthProvider = ({ children }) => {
+        const [token, setToken] = useState(localStorage.getItem('authToken'));
+        const [user, setUser] = useState(null);
+
+        useEffect(() => {
+            if (token) {
+                try {
+                    const payload = JSON.parse(atob(token.split('.')[1]));
+                    setUser({ email: payload.sub || 'user@example.com', roles: payload.authorities || [] });
+                } catch {
+                    setUser({ email: 'user@example.com', roles: [] });
+                }
+            } else {
+                setUser(null);
+            }
+        }, [token]);
+
+        const login = async (email, password) => {
+            if (USE_DUMMY_LOGIN) {
+                const dummyPayload = { sub: email, authorities: ['ROLE_AUTOR'] };
+                const dummyToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' + btoa(JSON.stringify(dummyPayload)) + '.signature';
+                localStorage.setItem('authToken', dummyToken);
+                setToken(dummyToken);
+                return true;
+            }
+            try {
+                const params = new URLSearchParams();
+                params.append('grant_type', 'password');
+                params.append('username', email);
+                params.append('password', password);
+                params.append('scope', 'openid read write');
+
+                const res = await fetch(`${GATEWAY_URL}/oauth2/token`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                        'Authorization': 'Basic ' + btoa('public-client:secret')
+                    },
+                    body: params.toString()
+                });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                localStorage.setItem('authToken', data.access_token);
+                setToken(data.access_token);
+                return true;
+            } catch (e) {
+                console.error('Error login:', e);
+                return false;
+            }
+        };
+
+        const logout = async () => {
+            try {
+                await fetch(`${GATEWAY_URL}/api/auth/logout`, {
+                    method: 'POST',
+                    headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+                });
+            } catch {}
+            localStorage.removeItem('authToken');
+            setToken(null);
+            setUser(null);
+        };
+
+        return <AuthContext.Provider value={{ token, user, login, logout }}>{children}</AuthContext.Provider>;
+    };
+
+    // ======================= Page Nav =======================
+    const PageContext = createContext(null);
+    const usePage = () => useContext(PageContext);
+    const PageProvider = ({ children }) => {
+        const [page, setPage] = useState('catalog'); // arrancamos mostrando Catálogo
+        return <PageContext.Provider value={[page, setPage]}>{children}</PageContext.Provider>;
+    };
+
+    // ======================= API helpers =======================
+    const api = {
+        async postJson(path, body, token) {
+            const res = await fetch(`${GATEWAY_URL}${path}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                },
+                body: JSON.stringify(body || {})
+            });
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        },
+        async getJson(path, token) {
+            const res = await fetch(`${GATEWAY_URL}${path}`, {
+                headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+            });
+            if (!res.ok) throw new Error(await res.text());
+            return res.json();
+        },
+        // Publicaciones
+        createArticle(token, payload) { return this.postJson(`/api/publications/articles`, payload, token); },
+        createBook(token, payload)    { return this.postJson(`/api/publications/books`, payload, token); },
+        getPublication(token, id)     { return this.getJson(`/api/publications/${id}`, token); },
+        transition(token, id, path, body) { return this.postJson(`/api/publications/${id}/${path}`, body, token); },
+        // Catálogo
+        getCatalog({ page=0, size=12, q='' } = {}) {
+            const qs = new URLSearchParams({ page, size, q });
+            return this.getJson(`/api/catalogo?${qs.toString()}`);
+        }
+    };
+
+    // ======================= UI =======================
+    const Navbar = () => {
+        const { user, logout } = useAuth();
+        const [, setPage] = usePage();
+        return (
+            <nav className="bg-white shadow-md">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div className="flex items-center justify-between h-16">
+                        <span className="font-bold text-xl text-blue-600 cursor-pointer" onClick={() => setPage('catalog')}>
+                            Gestor de Publicaciones
+                        </span>
+                        <div className="flex items-center gap-4">
+                            <button className="text-gray-600 hover:text-blue-600" onClick={() => setPage('catalog')}>Catálogo</button>
+                            <button className="text-gray-600 hover:text-blue-600" onClick={() => setPage('dashboard')}>Dashboard</button>
+                            {user ? (
+                                <>
+                                    <span className="text-gray-500">Hola, {user.email}</span>
+                                    <button onClick={logout} className="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded-md text-sm font-medium">
+                                        Logout
+                                    </button>
+                                </>
+                            ) : (
+                                <button onClick={() => setPage('login')} className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded-md text-sm font-medium">
+                                    Login
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </nav>
+        );
+    };
+
+    const LoadingSpinner = () => <div className="loader mx-auto my-8"></div>;
+
+    const LoginPage = () => {
+        const [email, setEmail] = useState('autor@demo.com');
+        const [password, setPassword] = useState('password');
+        const [error, setError] = useState('');
+        const [loading, setLoading] = useState(false);
+        const { login } = useAuth();
+        const [, setPage] = usePage();
+
+        const handleSubmit = async (e) => {
+            e.preventDefault();
+            setError('');
+            setLoading(true);
+            const ok = await login(email, password);
+            setLoading(false);
+            if (!ok) setError('Email o contraseña incorrectos.');
+            else setPage('dashboard');
+        };
+
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+                <div className="max-w-md w-full space-y-8 bg-white p-10 rounded-lg shadow-lg">
+                    <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">Inicia sesión</h2>
+                    <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+                        {error && <p className="text-red-500 text-center">{error}</p>}
+                        <div className="space-y-3">
+                            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
+                                   className="w-full px-3 py-2 border rounded-md" placeholder="Email"/>
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} required
+                                   className="w-full px-3 py-2 border rounded-md" placeholder="Contraseña"/>
+                        </div>
+                        <button type="submit" disabled={loading}
+                                className="w-full py-2 px-4 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 rounded-md">
+                            {loading ? 'Cargando...' : 'Login'}
+                        </button>
+                    </form>
+                </div>
+            </div>
+        );
+    };
+
+    // ---------- NUEVO: Formulario para crear Artículos/Libros reales ----------
+    const CreatePublicationForm = () => {
+        const { token } = useAuth();
+        const [tipo, setTipo] = useState('ARTICULO'); // ARTICULO | LIBRO
+        const [titulo, setTitulo] = useState('');
+        const [resumen, setResumen] = useState('');
+        const [palabras, setPalabras] = useState(''); // coma-separadas
+        // Campos de libro:
+        const [isbn, setIsbn] = useState('');
+        const [numeroPaginas, setNumeroPaginas] = useState('');
+        const [edicion, setEdicion] = useState('');
+        const [busy, setBusy] = useState(false);
+        const [result, setResult] = useState(null); // respuesta del backend
+        const autorPrincipalId = getOrMakeAuthorId();
+
+        if (!token) {
+            return (
+                <div className="bg-white p-6 rounded shadow">
+                    <h2 className="text-xl font-semibold mb-2">Crear publicación</h2>
+                    <p className="text-gray-600">Debes iniciar sesión para crear publicaciones.</p>
+                </div>
+            );
+        }
+
+        const onSubmit = async (e) => {
+            e.preventDefault();
+            setResult(null);
+            setBusy(true);
+            try {
+                const palabrasClave = (palabras || '')
+                    .split(',')
+                    .map(s => s.trim())
+                    .filter(Boolean);
+
+                if (tipo === 'ARTICULO') {
+                    const payload = {
+                        titulo,
+                        resumen,
+                        autorPrincipalId,
+                        palabrasClave
+                        // puedes añadir otros campos opcionales si tu backend los soporta
+                    };
+                    const res = await api.createArticle(token, payload);
+                    setResult({ ok: true, action: 'create-article', res });
+                } else {
+                    const payload = {
+                        titulo,
+                        resumen,
+                        autorPrincipalId,
+                        palabrasClave,
+                        isbn: isbn || null,
+                        numeroPaginas: numeroPaginas ? Number(numeroPaginas) : null,
+                        edicion: edicion || null
+                    };
+                    const res = await api.createBook(token, payload);
+                    setResult({ ok: true, action: 'create-book', res });
+                }
+                // Limpia solo lo conveniente
+                setTitulo('');
+                setResumen('');
+                setPalabras('');
+                setIsbn('');
+                setNumeroPaginas('');
+                setEdicion('');
+            } catch (e) {
+                setResult({ ok: false, error: e.message || String(e) });
+            } finally {
+                setBusy(false);
+            }
+        };
+
+        return (
+            <div className="bg-white p-6 rounded shadow space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                    <div>
+                        <h2 className="text-xl font-semibold">Crear publicación</h2>
+                        <p className="text-gray-500 text-sm">Autor actual: <span className="font-mono">{autorPrincipalId}</span></p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <label className="text-sm text-gray-700">Tipo:</label>
+                        <select value={tipo} onChange={(e) => setTipo(e.target.value)} className="px-3 py-2 border rounded">
+                            <option value="ARTICULO">Artículo</option>
+                            <option value="LIBRO">Libro</option>
+                        </select>
+                    </div>
+                </div>
+
+                <form onSubmit={onSubmit} className="space-y-3">
+                    <div>
+                        <label className="block text-sm text-gray-700 mb-1">Título</label>
+                        <input value={titulo} onChange={(e)=>setTitulo(e.target.value)} required className="w-full px-3 py-2 border rounded" placeholder="Título de la publicación"/>
+                    </div>
+                    <div>
+                        <label className="block text-sm text-gray-700 mb-1">Resumen</label>
+                        <textarea value={resumen} onChange={(e)=>setResumen(e.target.value)} required className="w-full px-3 py-2 border rounded" rows="3" placeholder="Resumen breve"></textarea>
+                    </div>
+                    <div>
+                        <label className="block text-sm text-gray-700 mb-1">Palabras clave (separadas por coma)</label>
+                        <input value={palabras} onChange={(e)=>setPalabras(e.target.value)} className="w-full px-3 py-2 border rounded" placeholder="ej: IA, ciencia de datos, salud"/>
+                    </div>
+
+                    {tipo === 'LIBRO' && (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div>
+                                <label className="block text-sm text-gray-700 mb-1">ISBN</label>
+                                <input value={isbn} onChange={(e)=>setIsbn(e.target.value)} className="w-full px-3 py-2 border rounded" placeholder="978-..." />
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-700 mb-1">Nro. Páginas</label>
+                                <input type="number" min="1" value={numeroPaginas} onChange={(e)=>setNumeroPaginas(e.target.value)} className="w-full px-3 py-2 border rounded" placeholder="120"/>
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-700 mb-1">Edición</label>
+                                <input value={edicion} onChange={(e)=>setEdicion(e.target.value)} className="w-full px-3 py-2 border rounded" placeholder="1a / 2a / etc." />
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                        <button type="submit" disabled={busy} className="px-4 py-2 bg-blue-600 text-white rounded disabled:opacity-60">
+                            {busy ? 'Creando...' : (tipo === 'ARTICULO' ? 'Crear Artículo' : 'Crear Libro')}
+                        </button>
+                        {busy && <span className="text-sm text-gray-600">Procesando…</span>}
+                    </div>
+                </form>
+
+                {result && (
+                    <div className="border rounded p-3">
+                        <h3 className="font-semibold mb-2">Resultado</h3>
+                        <pre className="json">{JSON.stringify(result, null, 2)}</pre>
+                        {result.ok && result.res?.id && (
+                            <div className="mt-3">
+                                <h4 className="font-semibold mb-2">Acciones con la publicación</h4>
+                                <PublicationActions id={result.res.id} onResult={() => {}}/>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    // ---- Acciones de publicación
+    const PublicationActions = ({ id, onResult }) => {
+        const { token } = useAuth();
+        const [busy, setBusy] = useState(false);
+
+        const run = async (fn, label) => {
+            setBusy(label);
+            try {
+                const res = await fn();
+                onResult({ ok: true, action: label, res });
+            } catch (e) {
+                onResult({ ok: false, action: label, error: e.message || String(e) });
+            } finally {
+                setBusy(false);
+            }
+        };
+
+        return (
+            <div className="flex flex-wrap gap-2">
+                <button onClick={() => run(() => api.transition(token, id, 'submit'), 'submit')}
+                        className="px-3 py-2 bg-blue-600 text-white rounded disabled:opacity-60" disabled={!!busy}>Enviar a revisión</button>
+                <button onClick={() => run(() => api.transition(token, id, 'request-changes', { comentarios: 'Por favor ampliar antecedentes.' }), 'request-changes')}
+                        className="px-3 py-2 bg-yellow-600 text-white rounded disabled:opacity-60" disabled={!!busy}>Solicitar cambios</button>
+                <button onClick={() => run(() => api.transition(token, id, 'resubmit'), 'resubmit')}
+                        className="px-3 py-2 bg-indigo-600 text-white rounded disabled:opacity-60" disabled={!!busy}>Reenviar con cambios</button>
+                <button onClick={() => run(() => api.transition(token, id, 'approve'), 'approve')}
+                        className="px-3 py-2 bg-green-600 text-white rounded disabled:opacity-60" disabled={!!busy}>Aprobar</button>
+                <button onClick={() => run(() => api.transition(token, id, 'publish'), 'publish')}
+                        className="px-3 py-2 bg-teal-600 text-white rounded disabled:opacity-60" disabled={!!busy}>Publicar</button>
+                <button onClick={() => run(() => api.transition(token, id, 'retire', { motivo: 'Solicitud del autor' }), 'retire')}
+                        className="px-3 py-2 bg-red-600 text-white rounded disabled:opacity-60" disabled={!!busy}>Retirar</button>
+                {busy && <span className="text-sm text-gray-600">Procesando: {busy}…</span>}
+            </div>
+        );
+    };
+
+    // ---- Playground (crear y operar por ID)
+    const Playground = () => {
+        const { token } = useAuth();
+        const [currentId, setCurrentId] = useState('');
+        const [loading, setLoading] = useState(false);
+        const [lastResult, setLastResult] = useState(null);
+        const [pubInfo, setPubInfo] = useState(null);
+
+        const createQuickArticle = async () => {
+            setLoading(true); setLastResult(null);
+            try {
+                const payload = {
+                    titulo: 'Artículo de prueba ' + new Date().toLocaleString(),
+                    resumen: 'Resumen breve de prueba para flujo de estados.',
+                    autorPrincipalId: getOrMakeAuthorId()
+                };
+                const res = await api.createArticle(token, payload);
+                setCurrentId(res.id); setPubInfo(res);
+                setLastResult({ ok: true, action: 'create-article', res });
+            } catch (e) {
+                setLastResult({ ok: false, action: 'create-article', error: e.message || String(e) });
+            } finally { setLoading(false); }
+        };
+
+        const createQuickBook = async () => {
+            setLoading(true); setLastResult(null);
+            try {
+                const payload = {
+                    titulo: 'Libro de prueba ' + new Date().toLocaleString(),
+                    resumen: 'Resumen del libro de prueba.',
+                    autorPrincipalId: getOrMakeAuthorId(),
+                    isbn: '978-1-4028-9462-6',
+                    numeroPaginas: 120,
+                    edicion: '1a'
+                };
+                const res = await api.createBook(token, payload);
+                setCurrentId(res.id); setPubInfo(res);
+                setLastResult({ ok: true, action: 'create-book', res });
+            } catch (e) {
+                setLastResult({ ok: false, action: 'create-book', error: e.message || String(e) });
+            } finally { setLoading(false); }
+        };
+
+        const loadById = async () => {
+            if (!currentId) return;
+            setLoading(true); setLastResult(null);
+            try {
+                const res = await api.getPublication(token, currentId);
+                setPubInfo(res);
+                setLastResult({ ok: true, action: 'load', res });
+            } catch (e) {
+                setLastResult({ ok: false, action: 'load', error: e.message || String(e) });
+            } finally { setLoading(false); }
+        };
+
+        return (
+            <div className="bg-white p-6 rounded shadow space-y-5">
+                <h2 className="text-xl font-semibold">Playground de Publicaciones</h2>
+                <div className="flex flex-wrap gap-2">
+                    <button onClick={createQuickArticle} className="px-3 py-2 bg-blue-600 text-white rounded disabled:opacity-60" disabled={loading}>Crear Artículo rápido</button>
+                    <button onClick={createQuickBook} className="px-3 py-2 bg-purple-600 text-white rounded disabled:opacity-60" disabled={loading}>Crear Libro rápido</button>
+                </div>
+                <div className="space-y-2">
+                    <label className="block text-sm text-gray-700">ID de publicación</label>
+                    <div className="flex gap-2">
+                        <input value={currentId} onChange={(e) => setCurrentId(e.target.value)} className="flex-1 px-3 py-2 border rounded" placeholder="UUID de la publicación"/>
+                        <button onClick={loadById} className="px-3 py-2 bg-gray-800 text-white rounded disabled:opacity-60" disabled={!currentId || loading}>Cargar</button>
+                    </div>
+                </div>
+                {currentId && (
+                    <>
+                        <div>
+                            <h3 className="font-semibold mb-2">Transiciones</h3>
+                            <PublicationActions id={currentId} onResult={setLastResult}/>
+                        </div>
+                        <div className="mt-4">
+                            <h3 className="font-semibold mb-2">Publicación (snapshot)</h3>
+                            {pubInfo ? <pre className="json">{JSON.stringify(pubInfo, null, 2)}</pre> : <p className="text-gray-500">Aún no cargada. Pulsa “Cargar”.</p>}
+                        </div>
+                    </>
+                )}
+                {lastResult && (
+                    <div className="mt-4">
+                        <h3 className="font-semibold mb-2">Última respuesta</h3>
+                        <pre className="json">{JSON.stringify(lastResult, null, 2)}</pre>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    // ---- Catálogo
+    const CatalogPage = () => {
+        const [list, setList] = useState([]);
+        const [loading, setLoading] = useState(true);
+        const [error, setError] = useState('');
+        const [query, setQuery] = useState('');
+        const [page, setPage] = useState(0);
+        const [size] = useState(12);
+        const [totalPages, setTotalPages] = useState(1);
+
+        const load = async (p=0, q='') => {
+            setLoading(true); setError('');
+            try {
+                const data = await api.getCatalog({ page: p, size, q });
+                setList(data.content || []);
+                setTotalPages(data.totalPages ?? 1);
+            } catch (e) {
+                setError(e.message || String(e));
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        useEffect(() => { load(page, query); }, []); // primera carga
+
+        const search = (e) => { e.preventDefault(); setPage(0); load(0, query); };
+        const next = () => { const p = Math.min(page+1, totalPages-1); setPage(p); load(p, query); };
+        const prev = () => { const p = Math.max(page-1, 0); setPage(p); load(p, query); };
+
+        return (
+            <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+                <h1 className="text-3xl font-bold text-gray-900 mb-4">Catálogo</h1>
+                <form onSubmit={search} className="flex gap-2 mb-4">
+                    <input value={query} onChange={e=>setQuery(e.target.value)} className="flex-1 px-3 py-2 border rounded" placeholder="Buscar por título, autor, palabras clave..."/>
+                    <button className="px-3 py-2 bg-blue-600 text-white rounded">Buscar</button>
+                </form>
+                {loading && <LoadingSpinner/>}
+                {error && <p className="text-red-600">{error}</p>}
+                {!loading && !error && (
+                    <>
+                        {list.length === 0 ? (
+                            <p>No hay elementos para mostrar.</p>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {list.map(pub => (
+                                    <div key={pub.id || pub.publicacionId} className="bg-white rounded-lg shadow p-5">
+                                        <div className="flex items-center gap-2 text-xs">
+                                            <span className="inline-block bg-blue-100 text-blue-800 font-semibold px-2.5 py-0.5 rounded">{pub.tipo}</span>
+                                            {pub.estado && <span className="text-gray-500">{pub.estado}</span>}
+                                        </div>
+                                        <h2 className="text-lg font-bold mt-2">{pub.titulo}</h2>
+                                        <p className="text-gray-700 mt-2">{pub.resumen}</p>
+                                        {(pub.palabrasClave || pub.palabras)?.length > 0 && (
+                                            <div className="mt-3 flex flex-wrap gap-1">
+                                                {(pub.palabrasClave || pub.palabras).slice(0,5).map((k, i) => (
+                                                    <span key={i} className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded">#{k}</span>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        <div className="mt-6 flex items-center gap-3">
+                            <button onClick={prev} className="px-3 py-2 bg-gray-200 rounded" disabled={page<=0}>Anterior</button>
+                            <span className="text-sm text-gray-600">Página {page+1} de {totalPages}</span>
+                            <button onClick={next} className="px-3 py-2 bg-gray-200 rounded" disabled={page>=totalPages-1}>Siguiente</button>
+                        </div>
+                    </>
+                )}
+            </div>
+        );
+    };
+
+    const DashboardPage = () => {
+        const { token } = useAuth();
+        if (!token) {
+            return (
+                <div className="max-w-4xl mx-auto py-10 px-4">
+                    <p className="text-gray-700">Debes iniciar sesión para usar el dashboard.</p>
+                </div>
+            );
+        }
+        return (
+            <div className="max-w-5xl mx-auto py-8 px-4 space-y-6">
+                <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
+
+                {/* NUEVO: Crear publicaciones reales */}
+                <CreatePublicationForm/>
+
+                {/* Playground existente (lo dejo intacto) */}
+                <Playground/>
+            </div>
+        );
+    };
+
+    const App = () => {
+        const { token } = useAuth();
+        const [page] = usePage();
+        return (
+            <>
+                <Navbar/>
+                <main>
+                    {page === 'catalog' && <CatalogPage/>}
+                    {page === 'dashboard' && (token ? <DashboardPage/> : <LoginPage/>)}
+                    {page === 'login' && <LoginPage/>}
+                </main>
+            </>
+        );
+    };
+
+    ReactDOM.createRoot(document.getElementById('root')).render(
+        <AuthProvider>
+            <PageProvider>
+                <App/>
+            </PageProvider>
+        </AuthProvider>
+    );
+</script>
+</body>
+</html>
