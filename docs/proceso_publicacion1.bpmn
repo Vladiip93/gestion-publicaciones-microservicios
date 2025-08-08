@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  targetNamespace="http://example.com/publicaciones"
+                  xsi:schemaLocation="http://camunda.org/schema/zeebe/1.0 ">
+
+  <!-- Mensaje global para la correlación de retiro -->
+  <bpmn:message id="msgRetirar" name="RetirarPublicacion"/>
+
+  <bpmn:process id="proceso_publicacion" name="Proceso de Publicación" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Iniciar solicitud">
+      <bpmn:outgoing>flow_start_to_ingreso</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="tarea_ingreso" name="Ingresar publicación">
+      <bpmn:incoming>flow_start_to_ingreso</bpmn:incoming>
+      <bpmn:outgoing>flow_ingreso_to_validacion</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <zeebe:formDefinition formKey="camunda-forms:deployment:ingreso-publicacion"/>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+
+    <bpmn:serviceTask id="tarea_validar" name="Validar datos">
+      <bpmn:incoming>flow_ingreso_to_validacion</bpmn:incoming>
+      <bpmn:outgoing>flow_validacion_to_revision</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="validate-publication" retries="3"/>
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+
+    <bpmn:userTask id="tarea_revisar_aprobar" name="Revisar y aprobar">
+      <bpmn:incoming>flow_validacion_to_revision</bpmn:incoming>
+      <bpmn:outgoing>flow_revision_to_gateway</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <zeebe:formDefinition formKey="camunda-forms:deployment:revisar-aprobar"/>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="gw_aprobado" name="¿Aprobado?">
+      <bpmn:incoming>flow_revision_to_gateway</bpmn:incoming>
+      <bpmn:outgoing>flow_aprobado_si</bpmn:outgoing>
+      <bpmn:outgoing>flow_aprobado_no</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:serviceTask id="tarea_emitir_ready" name="Emitir PublicationReadyForCatalog">
+      <bpmn:incoming>flow_aprobado_si</bpmn:incoming>
+      <bpmn:outgoing>flow_ready_to_publicar</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="publication-ready" retries="3"/>
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="tarea_publicar" name="Publicar en catálogo">
+      <bpmn:incoming>flow_ready_to_publicar</bpmn:incoming>
+      <bpmn:outgoing>flow_publicar_to_end_publicado</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="catalog-publish" retries="3"/>
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end_publicado" name="Publicado">
+      <bpmn:incoming>flow_publicar_to_end_publicado</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:userTask id="tarea_notificar_correcciones" name="Notificar correcciones">
+      <bpmn:incoming>flow_aprobado_no</bpmn:incoming>
+      <bpmn:outgoing>flow_correcciones_reintento</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <zeebe:formDefinition formKey="camunda-forms:deployment:notificar-correcciones"/>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+
+    <bpmn:boundaryEvent id="boundary_retirar" name="Solicitud de retiro" cancelActivity="false"
+                        attachedToRef="tarea_publicar">
+      <bpmn:outgoing>flow_boundary_to_retirar</bpmn:outgoing>
+      <bpmn:messageEventDefinition messageRef="msgRetirar"/>
+      <bpmn:extensionElements>
+        <!-- correlación por el ID de la publicación -->
+        <zeebe:subscription correlationKey="=publicacionId"/>
+      </bpmn:extensionElements>
+    </bpmn:boundaryEvent>
+
+    <bpmn:serviceTask id="tarea_retirar" name="Retirar de catálogo">
+      <bpmn:incoming>flow_boundary_to_retirar</bpmn:incoming>
+      <bpmn:outgoing>flow_retirar_to_end_retirado</bpmn:outgoing>
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="catalog-retire" retries="3"/>
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end_retirado" name="Retirado">
+      <bpmn:incoming>flow_retirar_to_end_retirado</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- Flujos -->
+    <bpmn:sequenceFlow id="flow_start_to_ingreso" sourceRef="start" targetRef="tarea_ingreso"/>
+    <bpmn:sequenceFlow id="flow_ingreso_to_validacion" sourceRef="tarea_ingreso" targetRef="tarea_validar"/>
+    <bpmn:sequenceFlow id="flow_validacion_to_revision" sourceRef="tarea_validar" targetRef="tarea_revisar_aprobar"/>
+    <bpmn:sequenceFlow id="flow_revision_to_gateway" sourceRef="tarea_revisar_aprobar" targetRef="gw_aprobado"/>
+    <bpmn:sequenceFlow id="flow_aprobado_si" sourceRef="gw_aprobado" targetRef="tarea_emitir_ready">
+      <!-- FEEL: aprobado == true -->
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">= aprobado = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="flow_aprobado_no" sourceRef="gw_aprobado" targetRef="tarea_notificar_correcciones">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">= not aprobado</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="flow_ready_to_publicar" sourceRef="tarea_emitir_ready" targetRef="tarea_publicar"/>
+    <bpmn:sequenceFlow id="flow_publicar_to_end_publicado" sourceRef="tarea_publicar" targetRef="end_publicado"/>
+    <bpmn:sequenceFlow id="flow_correcciones_reintento" sourceRef="tarea_notificar_correcciones"
+                       targetRef="tarea_ingreso"/>
+    <bpmn:sequenceFlow id="flow_boundary_to_retirar" sourceRef="boundary_retirar" targetRef="tarea_retirar"/>
+    <bpmn:sequenceFlow id="flow_retirar_to_end_retirado" sourceRef="tarea_retirar" targetRef="end_retirado"/>
+
+  </bpmn:process>
+
+  <!-- ======= BPMN-DI (layout) ======= -->
+  <bpmndi:BPMNDiagram id="Diagram_publicacion">
+    <bpmndi:BPMNPlane id="Plane_publicacion" bpmnElement="proceso_publicacion">
+
+      <!-- Shapes (nodos) -->
+      <bpmndi:BPMNShape id="DI_start" bpmnElement="start">
+        <dc:Bounds x="120" y="160" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_tarea_ingreso" bpmnElement="tarea_ingreso">
+        <dc:Bounds x="200" y="140" width="160" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_tarea_validar" bpmnElement="tarea_validar">
+        <dc:Bounds x="400" y="140" width="160" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_tarea_revisar_aprobar" bpmnElement="tarea_revisar_aprobar">
+        <dc:Bounds x="600" y="140" width="160" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_gw_aprobado" bpmnElement="gw_aprobado" isMarkerVisible="true">
+        <dc:Bounds x="800" y="160" width="50" height="50"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_tarea_emitir_ready" bpmnElement="tarea_emitir_ready">
+        <dc:Bounds x="900" y="60" width="170" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_tarea_publicar" bpmnElement="tarea_publicar">
+        <dc:Bounds x="1120" y="60" width="170" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_end_publicado" bpmnElement="end_publicado">
+        <dc:Bounds x="1320" y="80" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_tarea_notificar_correcciones" bpmnElement="tarea_notificar_correcciones">
+        <dc:Bounds x="900" y="220" width="170" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_boundary_retirar" bpmnElement="boundary_retirar">
+        <!-- pegado al borde de tarea_publicar -->
+        <dc:Bounds x="1190" y="130" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_tarea_retirar" bpmnElement="tarea_retirar">
+        <dc:Bounds x="1120" y="300" width="170" height="80"/>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="DI_end_retirado" bpmnElement="end_retirado">
+        <dc:Bounds x="1320" y="320" width="36" height="36"/>
+      </bpmndi:BPMNShape>
+
+      <!-- Edges (flujos) -->
+      <bpmndi:BPMNEdge id="DI_flow_start_to_ingreso" bpmnElement="flow_start_to_ingreso">
+        <di:waypoint x="156" y="178"/>
+        <di:waypoint x="200" y="178"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_ingreso_to_validacion" bpmnElement="flow_ingreso_to_validacion">
+        <di:waypoint x="360" y="180"/>
+        <di:waypoint x="400" y="180"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_validacion_to_revision" bpmnElement="flow_validacion_to_revision">
+        <di:waypoint x="560" y="180"/>
+        <di:waypoint x="600" y="180"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_revision_to_gateway" bpmnElement="flow_revision_to_gateway">
+        <di:waypoint x="760" y="180"/>
+        <di:waypoint x="800" y="185"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_aprobado_si" bpmnElement="flow_aprobado_si">
+        <di:waypoint x="850" y="185"/>
+        <di:waypoint x="985" y="100"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_aprobado_no" bpmnElement="flow_aprobado_no">
+        <di:waypoint x="850" y="185"/>
+        <di:waypoint x="985" y="260"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_ready_to_publicar" bpmnElement="flow_ready_to_publicar">
+        <di:waypoint x="1070" y="100"/>
+        <di:waypoint x="1120" y="100"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_publicar_to_end_publicado" bpmnElement="flow_publicar_to_end_publicado">
+        <di:waypoint x="1290" y="100"/>
+        <di:waypoint x="1320" y="98"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_correcciones_reintento" bpmnElement="flow_correcciones_reintento">
+        <di:waypoint x="900" y="260"/>
+        <di:waypoint x="280" y="260"/>
+        <di:waypoint x="280" y="220"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_boundary_to_retirar" bpmnElement="flow_boundary_to_retirar">
+        <di:waypoint x="1208" y="166"/>
+        <di:waypoint x="1205" y="300"/>
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="DI_flow_retirar_to_end_retirado" bpmnElement="flow_retirar_to_end_retirado">
+        <di:waypoint x="1290" y="340"/>
+        <di:waypoint x="1320" y="338"/>
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
